@@ -133,7 +133,8 @@ class _AbstractHMM(BaseEstimator):
     """
 
     def __init__(self, n_components, algorithm, random_state, n_iter,
-                 tol, verbose, params, init_params, implementation):
+                 tol, verbose, params, init_params, implementation,
+                 shift_sampling_window = None, shift_limits = 1):
         """
         Parameters
         ----------
@@ -173,6 +174,8 @@ class _AbstractHMM(BaseEstimator):
         self.verbose = verbose
         self.implementation = implementation
         self.random_state = random_state
+        self.shift_sampling_window = shift_sampling_window
+        self.shift_limits = shift_limits
 
     def score_samples(self, X, lengths=None):
         """
@@ -438,7 +441,7 @@ class _AbstractHMM(BaseEstimator):
 
         return np.atleast_2d(X), np.array(state_sequence, dtype=int)
 
-    def fit(self, X, lengths=None):
+    def fit(self, X, lengths=None, X_val=None, lengths_val=None):
         """
         Estimate model parameters.
 
@@ -462,15 +465,31 @@ class _AbstractHMM(BaseEstimator):
         """
         X = check_array(X)
 
+
         if lengths is None:
             lengths = np.asarray([X.shape[0]])
+
+        if X_val is not None:
+            X_val = check_array(X_val)
+            if lengths_val is None:
+                lengths_val = np.asarray([X_val.shape[0]])
+
 
         self._init(X, lengths)
         self._check()
         self.monitor_._reset()
 
         for iter in range(self.n_iter):
+
             stats, curr_logprob = self._do_estep(X, lengths)
+
+
+            # validation step
+
+            if X_val is not None:
+                logprob_test = self.score(X_val,lengths=lengths_val)
+                curr_logprob = logprob_test
+
 
             # Compute lower bound before updating model parameters
             lower_bound = self._compute_lower_bound(curr_logprob)
@@ -478,6 +497,7 @@ class _AbstractHMM(BaseEstimator):
             # XXX must be before convergence check, because otherwise
             #     there won't be any updates for the case ``n_iter=1``.
             self._do_mstep(stats)
+
             self.monitor_.report(lower_bound)
             if self.monitor_.converged:
                 break
@@ -724,6 +744,9 @@ class _AbstractHMM(BaseEstimator):
                 return
             log_xi_sum = _hmmc.compute_log_xi_sum(
                 fwdlattice, self.transmat_, bwdlattice, lattice)
+            #print('fwdlattice',fwdlattice)
+            #print('bwdlattice',bwdlattice)
+            #print('lattice', lattice)
             with np.errstate(under="ignore"):
                 stats['trans'] += np.exp(log_xi_sum)
 
@@ -746,14 +769,39 @@ class _AbstractHMM(BaseEstimator):
         stats = self._initialize_sufficient_statistics()
         self._estep_begin()
         curr_logprob = 0
+
         for sub_X in _utils.split_X_lengths(X, lengths):
             lattice, logprob, posteriors, fwdlattice, bwdlattice = impl(sub_X)
-            # Derived HMM classes will implement the following method to
-            # update their probability distributions, so keep
-            # a single call to this method for simplicity.
-            self._accumulate_sufficient_statistics(
-                stats, sub_X, lattice, posteriors, fwdlattice,
-                bwdlattice)
+            if self.shift_sampling_window is not None:
+
+                T = self.shift_sampling_window
+                M = self.shift_limits
+                L = sub_X.shape[0]
+                starts = np.random.choice(L-2*T,size=(L//T-2,)) + T
+                shifts = (np.random.choice(2*M, size=(L // T - 2,)) - M ) if M>0 else np.zeros(shape=(L // T - 2,),dtype=int)
+                for id,(start,shift) in enumerate(zip(starts,shifts)):
+                    end = start + T
+                    correct_start = min(start,start+shift)
+                    correct_end = max(start+T, start + T + shift)
+                    sub_X_window = sub_X[correct_start:correct_end]
+                    lattice, _, posteriors, fwdlattice, bwdlattice = impl(sub_X_window)
+                    #print(start,correct_start,correct_end,end)
+                    lattice =    lattice     [start - correct_start:end - correct_start]
+                    posteriors = posteriors  [start - correct_start:end - correct_start]
+                    fwdlattice = fwdlattice  [start - correct_start:end - correct_start]
+                    bwdlattice = bwdlattice  [start - correct_start:end - correct_start]
+                    sub_sub_X =  sub_X_window[start - correct_start:end - correct_start]
+                    #print(posteriors.shape,fwdlattice.shape,bwdlattice.shape,sub_sub_X.shape)
+                    self._accumulate_sufficient_statistics(
+                        stats, sub_sub_X, lattice, posteriors, fwdlattice,
+                        bwdlattice)
+            else:
+                # Derived HMM classes will implement the following method to
+                # update their probability distributions, so keep
+                # a single call to this method for simplicity.
+                self._accumulate_sufficient_statistics(
+                    stats, sub_X, lattice, posteriors, fwdlattice,
+                    bwdlattice)
             curr_logprob += logprob
         return stats, curr_logprob
 
@@ -795,7 +843,8 @@ class BaseHMM(_AbstractHMM):
                  n_iter=10, tol=1e-2, verbose=False,
                  params=string.ascii_letters,
                  init_params=string.ascii_letters,
-                 implementation="log"):
+                 implementation="log",shift_sampling_window=None,
+                 shift_limits=1):
         """
         Parameters
         ----------
@@ -835,7 +884,9 @@ class BaseHMM(_AbstractHMM):
             n_components=n_components, algorithm=algorithm,
             random_state=random_state, n_iter=n_iter, tol=tol,
             verbose=verbose, params=params, init_params=init_params,
-            implementation=implementation)
+            implementation=implementation,
+            shift_sampling_window=shift_sampling_window,
+            shift_limits = shift_limits)
         self.startprob_prior = startprob_prior
         self.transmat_prior = transmat_prior
         self.monitor_ = ConvergenceMonitor(self.tol, self.n_iter, self.verbose)

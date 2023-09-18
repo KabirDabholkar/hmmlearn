@@ -56,7 +56,7 @@ class CategoricalHMM(_emissions.BaseCategoricalHMM, BaseHMM):
                  n_features=None, algorithm="viterbi",
                  random_state=None, n_iter=10, tol=1e-2,
                  verbose=False, params="ste", init_params="ste",
-                 implementation="log"):
+                 implementation="log",shift_sampling_window = None,shift_limits = 1):
         """
         Parameters
         ----------
@@ -115,7 +115,9 @@ class CategoricalHMM(_emissions.BaseCategoricalHMM, BaseHMM):
                          random_state=random_state,
                          n_iter=n_iter, tol=tol, verbose=verbose,
                          params=params, init_params=init_params,
-                         implementation=implementation)
+                         implementation=implementation,
+                         shift_sampling_window=shift_sampling_window,
+                         shift_limits=shift_limits)
         self.emissionprob_prior = emissionprob_prior
         self.n_features = n_features
 
