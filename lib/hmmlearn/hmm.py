@@ -1045,3 +1045,131 @@ class PoissonHMM(_emissions.BasePoissonHMM):
             # kappas = betas / (betas + n)
             # self.lambdas_ = kappas * (alphas / betas) + (1 - kappas) * y_bar
             self.lambdas_ = (alphas + n * y_bar) / (betas + n)
+
+
+class BernoulliHMM(_emissions.BaseBernoulliHMM):
+    """
+    Hidden Markov Model with Bernoulli emissions.
+
+    Attributes
+    ----------
+    monitor_ : ConvergenceMonitor
+        Monitor object used to check the convergence of EM.
+
+    startprob_ : array, shape (n_components, )
+        Initial state occupation distribution.
+
+    transmat_ : array, shape (n_components, n_components)
+        Matrix of transition probabilities between states.
+
+    lambdas_ : array, shape (n_components, n_features)
+        The expectation value for each
+        feature in a given state.
+    """
+
+    def __init__(self, n_components=1, startprob_prior=1.0,
+                 transmat_prior=1.0, lambdas_prior=0.0,
+                 lambdas_weight=0.0,
+                 algorithm="viterbi", random_state=None,
+                 n_iter=10, tol=1e-2, verbose=False,
+                 params="stl", init_params="stl",
+                 implementation="log"):
+        """
+        Parameters
+        ----------
+        n_components : int
+            Number of states.
+
+        startprob_prior : array, shape (n_components, ), optional
+            Parameters of the Dirichlet prior distribution for
+            :attr:`startprob_`.
+
+        transmat_prior : array, shape (n_components, n_components), optional
+            Parameters of the Dirichlet prior distribution for each row
+            of the transition probabilities :attr:`transmat_`.
+
+        lambdas_prior, lambdas_weight : array, shape (n_components,), optional
+            The gamma prior on the lambda values using alpha-beta notation,
+            respectivley. If None, will be set based on the method of
+            moments.
+
+        algorithm : {"viterbi", "map"}, optional
+            Decoder algorithm.
+
+        random_state: RandomState or an int seed, optional
+            A random number generator instance.
+
+        n_iter : int, optional
+            Maximum number of iterations to perform.
+
+        tol : float, optional
+            Convergence threshold. EM will stop if the gain in log-likelihood
+            is below this value.
+
+        verbose : bool, optional
+            Whether per-iteration convergence reports are printed to
+            :data:`sys.stderr`.  Convergence can also be diagnosed using the
+            :attr:`monitor_` attribute.
+
+        params, init_params : string, optional
+            The parameters that get updated during (``params``) or initialized
+            before (``init_params``) the training.  Can contain any
+            combination of 's' for startprob, 't' for transmat, and 'l' for
+            lambdas.  Defaults to all parameters.
+
+        implementation : string, optional
+            Determines if the forward-backward algorithm is implemented with
+            logarithms ("log"), or using scaling ("scaling").  The default is
+            to use logarithms for backwards compatability.
+        """
+        BaseHMM.__init__(self, n_components,
+                         startprob_prior=startprob_prior,
+                         transmat_prior=transmat_prior,
+                         algorithm=algorithm,
+                         random_state=random_state,
+                         n_iter=n_iter, tol=tol, verbose=verbose,
+                         params=params, init_params=init_params,
+                         implementation=implementation)
+        self.lambdas_prior = lambdas_prior
+        self.lambdas_weight = lambdas_weight
+
+    def _init(self, X, lengths=None):
+        super()._init(X, lengths)
+        self.random_state = check_random_state(self.random_state)
+
+        mean_X = X.mean()
+        var_X = X.var()
+
+        if self._needs_init("l", "lambdas_"):
+            # initialize with method of moments based on X
+            self.lambdas_ = self.random_state.uniform(0,1,
+                # shape=mean_X**2 / var_X,
+                # scale=var_X / mean_X,  # numpy uses theta = 1 / beta
+                size=(self.n_components, self.n_features))
+
+    def _check(self):
+        super()._check()
+
+        self.lambdas_ = np.atleast_2d(self.lambdas_)
+        n_features = getattr(self, "n_features", self.lambdas_.shape[1])
+        if self.lambdas_.shape != (self.n_components, n_features):
+            raise ValueError(
+                "lambdas_ must have shape (n_components, n_features)")
+        self.n_features = n_features
+
+    def _do_mstep(self, stats):
+        super()._do_mstep(stats)
+
+        if 'l' in self.params:
+            # Based on: Hyvönen & Tolonen, "Bayesian Inference 2019"
+            # section 3.2
+            # https://vioshyvo.github.io/Bayesian_inference
+            # alphas, betas = self.lambdas_prior, self.lambdas_weight
+            # n = stats['post'].sum()
+            # y_bar = stats['obs'] / stats['post'][:, None]
+            # the same as kappa notation (more intuitive) but avoids divide by
+            # 0, where:
+            # kappas = betas / (betas + n)
+            # self.lambdas_ = kappas * (alphas / betas) + (1 - kappas) * y_bar
+            self.lambdas_ = stats['obs_one']/(stats['obs_zero']+stats['obs_one'])
+

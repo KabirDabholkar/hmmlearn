@@ -4,7 +4,7 @@ import warnings
 
 import numpy as np
 from scipy import special
-from scipy.stats import multinomial, poisson
+from scipy.stats import multinomial, poisson, bernoulli
 from sklearn.utils import check_random_state
 
 from .base import BaseHMM, _AbstractHMM
@@ -408,3 +408,60 @@ class BasePoissonHMM(BaseHMM):
 
     def _generate_sample_from_state(self, state, random_state):
         return random_state.poisson(self.lambdas_[state])
+
+    def _generate_rate_from_stateproba(self, state_proba):
+        return state_proba @ self.lambdas_
+
+
+class BaseBernoulliHMM(BaseHMM):
+
+    def _get_n_fit_scalars_per_param(self):
+        nc = self.n_components
+        nf = self.n_features
+        return {
+            "s": nc - 1,
+            "t": nc * (nc - 1),
+            "l": nc * nf,
+        }
+
+    def _compute_likelihood(self, X):
+        probs = np.empty((len(X), self.n_components))
+        for c in range(self.n_components):
+            probs[:, c] = bernoulli.pmf(X, self.lambdas_[c]).prod(axis=1)
+        return probs
+
+    def _compute_log_likelihood(self, X):
+        logprobs = np.empty((len(X), self.n_components))
+        for c in range(self.n_components):
+            logprobs[:, c] = bernoulli.logpmf(X, self.lambdas_[c]).sum(axis=1)
+        return logprobs
+
+    def _initialize_sufficient_statistics(self):
+        stats = super()._initialize_sufficient_statistics()
+        stats['post'] = np.zeros(self.n_components)
+        stats['obs_zero'] = np.zeros((self.n_components, self.n_features))
+        stats['obs_one'] = np.zeros((self.n_components, self.n_features))
+        return stats
+
+    def _accumulate_sufficient_statistics(
+            self, stats, X, lattice, posteriors, fwdlattice, bwdlattice):
+        super()._accumulate_sufficient_statistics(stats=stats, X=X,
+                                                  lattice=lattice,
+                                                  posteriors=posteriors,
+                                                  fwdlattice=fwdlattice,
+                                                  bwdlattice=bwdlattice)
+
+        if 'l' in self.params:
+            # np.add.at(stats['obs'].T, X, posteriors)
+            # stats['obs'] = ((X==0)[:,None,:] * posteriors[:,:,None]).sum(0)
+            # print(posteriors.shape,X.shape)
+            stats['obs_zero'] += posteriors.T @ (~X).astype(float)
+            stats['obs_one']  += posteriors.T @ (X).astype(float)
+
+
+    def _generate_sample_from_state(self, state, random_state):
+        select_lambda = self.lambdas_[state]
+        return random_state.rand(*select_lambda.shape) < select_lambda
+
+    def _generate_rate_from_stateproba(self, state_proba):
+        return state_proba @ self.lambdas_

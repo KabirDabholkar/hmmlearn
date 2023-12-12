@@ -760,7 +760,7 @@ class _AbstractHMM(BaseEstimator):
             Sufficient statistics updated from all available samples.
         """
 
-    def _do_estep(self, X, lengths):
+    def _do_estep(self, X, lengths, return_everything=False):
         impl = {
             "scaling": self._fit_scaling,
             "log": self._fit_log,
@@ -777,8 +777,12 @@ class _AbstractHMM(BaseEstimator):
                 T = self.shift_sampling_window
                 M = self.shift_limits
                 L = sub_X.shape[0]
-                starts = np.random.choice(L-2*T,size=(L//T-2,)) + T
-                shifts = (np.random.choice(2*M, size=(L // T - 2,)) - M ) if M>0 else np.zeros(shape=(L // T - 2,),dtype=int)
+                # starts = np.random.choice(L-2*T,size=(L // T,)) + T
+                # shifts = (np.random.choice(2*M, size=(L // T,)) - M ) if M>0 else np.zeros(shape=(L // T - 2,),dtype=int)
+                starts = np.random.choice(L - T, size=(L // T,))
+                shifts = (np.random.choice(2*M, size=(L // T,)) - M ) if M>0 else np.zeros(shape=(L // T - 2,),dtype=int)
+                shifts = np.maximum(starts+shifts,0)-starts
+                shifts = np.minimum(starts + L + shifts, T) - starts - T
                 for id,(start,shift) in enumerate(zip(starts,shifts)):
                     end = start + T
                     correct_start = min(start,start+shift)
@@ -803,7 +807,67 @@ class _AbstractHMM(BaseEstimator):
                     stats, sub_X, lattice, posteriors, fwdlattice,
                     bwdlattice)
             curr_logprob += logprob
+        if return_everything:
+            return stats, curr_logprob, sub_X, lattice, posteriors, fwdlattice, bwdlattice
         return stats, curr_logprob
+
+    def _do_estep_modencoder(self, X, lengths, X_in = None, encoder=None, return_everything=False):
+        assert ((X_in is not None) and (encoder is not None))
+        impl_hmm = encoder
+        impl = {
+            "scaling": impl_hmm._fit_scaling,
+            "log": impl_hmm._fit_log,
+        }[self.implementation]
+
+        stats = self._initialize_sufficient_statistics()
+        self._estep_begin()
+        curr_logprob = 0
+
+        iterate_over = _utils.split_X_lengths(X, lengths)
+
+        for sub_X,sub_X_in in zip(_utils.split_X_lengths(X, lengths),_utils.split_X_lengths(X_in, lengths)):
+            lattice, logprob, posteriors, fwdlattice, bwdlattice = impl(sub_X_in)
+            if self.shift_sampling_window is not None:
+
+                T = self.shift_sampling_window
+                M = self.shift_limits
+                L = sub_X.shape[0]
+                # starts = np.random.choice(L-2*T,size=(L // T,)) + T
+                # shifts = (np.random.choice(2*M, size=(L // T,)) - M ) if M>0 else np.zeros(shape=(L // T - 2,),dtype=int)
+                starts = np.random.choice(L - T, size=(L // T,))
+                shifts = (np.random.choice(2*M, size=(L // T,)) - M ) if M>0 else np.zeros(shape=(L // T - 2,),dtype=int)
+                shifts = np.maximum(starts+shifts,0)-starts
+                shifts = np.minimum(starts + L + shifts, T) - starts - T
+                for id,(start,shift) in enumerate(zip(starts,shifts)):
+                    end = start + T
+                    correct_start = min(start,start+shift)
+                    correct_end = max(start+T, start + T + shift)
+                    sub_X_window = sub_X[correct_start:correct_end]
+                    sub_X_in_window = sub_X_in[correct_start:correct_end]
+                    lattice, _, posteriors, fwdlattice, bwdlattice = impl(sub_X_in_window)
+                    #print(start,correct_start,correct_end,end)
+                    lattice =    lattice     [start - correct_start:end - correct_start]
+                    posteriors = posteriors  [start - correct_start:end - correct_start]
+                    fwdlattice = fwdlattice  [start - correct_start:end - correct_start]
+                    bwdlattice = bwdlattice  [start - correct_start:end - correct_start]
+                    sub_sub_X =  sub_X_window[start - correct_start:end - correct_start]
+                    # sub_sub_X_in = sub_X_in_window[start - correct_start:end - correct_start]
+                    #print(posteriors.shape,fwdlattice.shape,bwdlattice.shape,sub_sub_X.shape)
+                    self._accumulate_sufficient_statistics(
+                        stats, sub_sub_X, lattice, posteriors, fwdlattice,
+                        bwdlattice)
+            else:
+                # Derived HMM classes will implement the following method to
+                # update their probability distributions, so keep
+                # a single call to this method for simplicity.
+                self._accumulate_sufficient_statistics(
+                    stats, sub_X, lattice, posteriors, fwdlattice,
+                    bwdlattice)
+            curr_logprob += logprob
+        if return_everything:
+            return stats, curr_logprob, sub_X, lattice, posteriors, fwdlattice, bwdlattice
+        return stats, curr_logprob
+
 
     def _estep_begin(self):
         pass
